@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════ الفروع ═══════════════════
+model Branch {
+  id             String   @id @default(cuid())
+  code           String   @unique
+  nameAr         String
+  city           String?
+  latitude       Float
+  longitude      Float
+  geofenceRadius Int      @default(100)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  employees  Employee[]
+  attendance Attendance[]
+}
+
+// ═══════════════════ المستخدمون ═══════════════════
+model User {
+  id           String   @id @default(cuid())
+  email        String?  @unique
+  passwordHash String?
+  pin          String?  // للموظف
+  role         String   @default("EMPLOYEE") // ADMIN, MANAGER, EMPLOYEE
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  employee Employee?
+}
+
+// ═══════════════════ الموظفون ═══════════════════
+model Employee {
+  id             String    @id @default(cuid())
+  employeeNumber String    @unique
+  nameAr         String
+  phone          String?
+  branchId       String
+  position       String
+  hireDate       DateTime  @default(now())
+  baseSalary     Decimal   @default(0) @db.Decimal(10, 2)
+  status         String    @default("ACTIVE") // ACTIVE, PROBATION, TERMINATED
+  userId         String?   @unique
+  createdAt      DateTime  @default(now())
+
+  branch     Branch       @relation(fields: [branchId], references: [id])
+  user       User?        @relation(fields: [userId], references: [id])
+  attendance Attendance[]
+  requests   Request[]
+}
+
+// ═══════════════════ الحضور ═══════════════════
+model Attendance {
+  id           String   @id @default(cuid())
+  employeeId   String
+  branchId     String
+  type         String   // CHECK_IN, CHECK_OUT
+  timestamp    DateTime @default(now())
+  latitude     Float?
+  longitude    Float?
+  photoUrl     String?
+  isValid      Boolean  @default(true)
+  notes        String?
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+  branch   Branch   @relation(fields: [branchId], references: [id])
+
+  @@index([employeeId, timestamp])
+}
+
+// ═══════════════════ الطلبات ═══════════════════
+model Request {
+  id           String    @id @default(cuid())
+  employeeId   String
+  type         String    // LEAVE, PERMISSION, LETTER
+  status       String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  reason       String?
+  startDate    DateTime?
+  endDate      DateTime?
+  daysRequested Int?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+}
