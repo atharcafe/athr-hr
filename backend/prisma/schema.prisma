@@ -79,14 +79,30 @@ model Attendance {
 model Request {
   id           String    @id @default(cuid())
   employeeId   String
-  type         String    // LEAVE, PERMISSION, LETTER
-  status       String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  type         String    // LEAVE, PERMISSION, LETTER, RESIGNATION, LOAN, TRANSFER
+  status       String    @default("PENDING") // PENDING, MANAGER_APPROVED, HR_APPROVED, APPROVED, REJECTED
   reason       String?
   startDate    DateTime?
   endDate      DateTime?
   daysRequested Int?
+  amount        Float?    // للسلفة
+  toBranchId    String?   // للنقل — الفرع المطلوب
+  resignationDate DateTime? // للاستقالة
+
+  // سلسلة الموافقات
+  managerApprovedAt   DateTime?
+  managerApprovedBy   String?
+  managerNote         String?
+  hrApprovedAt        DateTime?
+  hrApprovedBy        String?
+  hrNote              String?
+  rejectedAt          DateTime?
+  rejectedBy          String?
+  rejectionReason     String?
+
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   employee Employee @relation(fields: [employeeId], references: [id])
 }
+
