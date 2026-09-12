@@ -42,6 +42,7 @@ model Employee {
   employeeNumber String    @unique
   nameAr         String
   phone          String?
+  email          String?
   branchId       String
   position       String
   hireDate       DateTime  @default(now())
@@ -104,4 +105,17 @@ model Request {
   updatedAt    DateTime  @updatedAt
 
   employee Employee @relation(fields: [employeeId], references: [id])
+}
+
+model Policy {
+  id          String   @id @default(cuid())
+  title       String
+  body        String
+  level       String   @default("default") // default, info, important
+  icon        String?  // emoji or icon name
+  active      Boolean  @default(true)
+  publishedAt DateTime @default(now())
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
