@@ -105,4 +105,3 @@ model Request {
 
   employee Employee @relation(fields: [employeeId], references: [id])
 }
-
