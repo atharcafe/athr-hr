@@ -23,7 +23,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-production';
 // ═══════════════════ MIDDLEWARE ═══════════════════
 app.set('trust proxy', 1);
 app.use(helmet());
-app.use(cors({ origin: '*', credentials: true }));
+app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
