@@ -99,6 +99,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !user.passwordHash) return res.status(401).json({ error: 'بيانات غير صحيحة' });
+    if (!user.active) return res.status(401).json({ error: 'الحساب معطّل' });
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'بيانات غير صحيحة' });
@@ -388,7 +389,11 @@ app.post('/api/requests', authenticate, async (req, res) => {
   try {
     const employeeId = req.user.employeeId;
     if (!employeeId) return res.status(403).json({ error: 'غير مصرح' });
-    const { type, reason, startDate, endDate, daysRequested } = req.body;
+    const { type, reason, startDate, endDate, daysRequested, amount, toBranchId, resignationDate } = req.body;
+
+    const validTypes = ['LEAVE', 'PERMISSION', 'LETTER', 'RESIGNATION', 'LOAN', 'TRANSFER'];
+    if (!validTypes.includes(type)) return res.status(400).json({ error: 'نوع الطلب غير صحيح' });
+
     const request = await prisma.request.create({
       data: {
         employeeId,
@@ -397,6 +402,9 @@ app.post('/api/requests', authenticate, async (req, res) => {
         startDate: startDate ? new Date(startDate) : null,
         endDate: endDate ? new Date(endDate) : null,
         daysRequested: daysRequested ? parseInt(daysRequested) : null,
+        amount: amount ? parseFloat(amount) : null,
+        toBranchId: toBranchId || null,
+        resignationDate: resignationDate ? new Date(resignationDate) : null,
       },
     });
     res.status(201).json(request);
@@ -416,21 +424,75 @@ app.get('/api/requests/my', authenticate, async (req, res) => {
 });
 
 app.get('/api/requests/pending', authenticate, async (req, res) => {
+  // للأدمن — الطلبات اللي تنتظر موافقته
+  const { stage } = req.query; // manager, hr, or empty for all pending
+  let statusFilter;
+  if (stage === 'manager') statusFilter = { in: ['PENDING'] };
+  else if (stage === 'hr') statusFilter = { in: ['MANAGER_APPROVED'] };
+  else statusFilter = { in: ['PENDING', 'MANAGER_APPROVED'] };
+
   const requests = await prisma.request.findMany({
-    where: { status: 'PENDING' },
+    where: { status: statusFilter },
     include: {
-      employee: { select: { nameAr: true, employeeNumber: true, branch: { select: { nameAr: true } } } },
+      employee: { select: { nameAr: true, employeeNumber: true, branch: { select: { id: true, nameAr: true } } } },
     },
     orderBy: { createdAt: 'asc' },
   });
   res.json({ data: requests });
 });
 
-app.post('/api/requests/:id/approve', authenticate, async (req, res) => {
+// موافقة المدير المباشر (الخطوة الأولى)
+app.post('/api/requests/:id/manager-approve', authenticate, async (req, res) => {
   try {
+    const { note } = req.body;
     const request = await prisma.request.update({
       where: { id: req.params.id },
-      data: { status: 'APPROVED' },
+      data: {
+        status: 'MANAGER_APPROVED',
+        managerApprovedAt: new Date(),
+        managerApprovedBy: req.user.email || req.user.userId,
+        managerNote: note || null,
+      },
+    });
+    res.json(request);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// موافقة الموارد البشرية (الخطوة الثانية / النهائية)
+app.post('/api/requests/:id/hr-approve', authenticate, async (req, res) => {
+  try {
+    const { note } = req.body;
+    const request = await prisma.request.update({
+      where: { id: req.params.id },
+      data: {
+        status: 'APPROVED',
+        hrApprovedAt: new Date(),
+        hrApprovedBy: req.user.email || req.user.userId,
+        hrNote: note || null,
+      },
+    });
+    res.json(request);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// موافقة مباشرة (للتوافق مع الواجهة القديمة — تعتبر موافقة كاملة من الأدمن)
+app.post('/api/requests/:id/approve', authenticate, async (req, res) => {
+  try {
+    const { note } = req.body;
+    const request = await prisma.request.update({
+      where: { id: req.params.id },
+      data: {
+        status: 'APPROVED',
+        managerApprovedAt: new Date(),
+        managerApprovedBy: req.user.email || req.user.userId,
+        hrApprovedAt: new Date(),
+        hrApprovedBy: req.user.email || req.user.userId,
+        hrNote: note || null,
+      },
     });
     res.json(request);
   } catch (err) {
@@ -440,11 +502,92 @@ app.post('/api/requests/:id/approve', authenticate, async (req, res) => {
 
 app.post('/api/requests/:id/reject', authenticate, async (req, res) => {
   try {
+    const { reason } = req.body;
     const request = await prisma.request.update({
       where: { id: req.params.id },
-      data: { status: 'REJECTED' },
+      data: {
+        status: 'REJECTED',
+        rejectedAt: new Date(),
+        rejectedBy: req.user.email || req.user.userId,
+        rejectionReason: reason || null,
+      },
     });
     res.json(request);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════ USERS (ADMIN ACCOUNTS) ═══════════════════
+// إدارة حسابات الموظفين الإداريين (HR staff, managers)
+
+app.get('/api/users', authenticate, async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      where: { role: { not: 'EMPLOYEE' } },
+      select: { id: true, email: true, role: true, active: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ data: users });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users', authenticate, async (req, res) => {
+  try {
+    const { email, password, role } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'الإيميل والباسورد مطلوبان' });
+    if (password.length < 6) return res.status(400).json({ error: 'الباسورد يجب أن يكون ٦ أحرف على الأقل' });
+
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) return res.status(400).json({ error: 'الإيميل مستخدم من قبل' });
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = await prisma.user.create({
+      data: { email, passwordHash, role: role || 'ADMIN' },
+      select: { id: true, email: true, role: true, active: true, createdAt: true },
+    });
+    res.status(201).json(user);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/users/:id', authenticate, async (req, res) => {
+  try {
+    const { email, password, role, active } = req.body;
+    const data = {};
+    if (email !== undefined) data.email = email;
+    if (role !== undefined) data.role = role;
+    if (active !== undefined) data.active = active;
+    if (password) {
+      if (password.length < 6) return res.status(400).json({ error: 'الباسورد يجب أن يكون ٦ أحرف على الأقل' });
+      data.passwordHash = await bcrypt.hash(password, 10);
+    }
+
+    const user = await prisma.user.update({
+      where: { id: req.params.id },
+      data,
+      select: { id: true, email: true, role: true, active: true, createdAt: true },
+    });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/users/:id', authenticate, async (req, res) => {
+  try {
+    if (req.params.id === req.user.userId) {
+      return res.status(400).json({ error: 'لا يمكنك حذف حسابك' });
+    }
+    await prisma.user.update({
+      where: { id: req.params.id },
+      data: { active: false },
+    });
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
