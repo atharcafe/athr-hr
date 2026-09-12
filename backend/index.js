@@ -159,6 +159,76 @@ app.post('/api/auth/login-pin', async (req, res) => {
   }
 });
 
+// ═══════════════════ إعادة تعيين الرمز ═══════════════════
+// الموظف يتحقق برقمه الوظيفي + الإيميل → يحصل على رمز جديد
+app.post('/api/auth/reset-pin', async (req, res) => {
+  try {
+    const { employeeNumber, email } = req.body;
+    if (!employeeNumber || !email) return res.status(400).json({ error: 'أدخل الرقم الوظيفي والإيميل' });
+
+    const employee = await prisma.employee.findUnique({
+      where: { employeeNumber },
+      include: { user: true },
+    });
+
+    if (!employee) return res.status(404).json({ error: 'الرقم الوظيفي غير موجود' });
+    if (!employee.email) return res.status(400).json({ error: 'لم يتم تسجيل إيميل لك. تواصل مع مسؤولك.' });
+    if (employee.email.toLowerCase() !== email.trim().toLowerCase()) {
+      return res.status(401).json({ error: 'الإيميل غير مطابق' });
+    }
+    if (!employee.userId) return res.status(400).json({ error: 'حسابك غير مفعّل. تواصل مع مسؤولك.' });
+
+    // Generate new 4-digit PIN
+    const newPin = String(Math.floor(1000 + Math.random() * 9000));
+    const pinHash = await bcrypt.hash(newPin, 10);
+
+    await prisma.user.update({
+      where: { id: employee.userId },
+      data: { pin: pinHash },
+    });
+
+    res.json({
+      ok: true,
+      pin: newPin,
+      message: 'تم إعادة تعيين الرمز — احفظه فوراً!',
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'خطأ داخلي' });
+  }
+});
+
+// إعادة تعيين رمز بواسطة الأدمن — للموظف المحدد
+app.post('/api/employees/:id/reset-pin', authenticate, async (req, res) => {
+  try {
+    const employee = await prisma.employee.findUnique({
+      where: { id: req.params.id },
+      include: { user: true },
+    });
+    if (!employee) return res.status(404).json({ error: 'الموظف غير موجود' });
+    if (!employee.userId) return res.status(400).json({ error: 'حساب الموظف غير مفعّل' });
+
+    // Generate new 4-digit PIN
+    const newPin = String(Math.floor(1000 + Math.random() * 9000));
+    const pinHash = await bcrypt.hash(newPin, 10);
+
+    await prisma.user.update({
+      where: { id: employee.userId },
+      data: { pin: pinHash },
+    });
+
+    res.json({
+      ok: true,
+      pin: newPin,
+      employeeName: employee.nameAr,
+      employeeNumber: employee.employeeNumber,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/auth/me', authenticate, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user.userId },
@@ -305,6 +375,87 @@ app.patch('/api/employees/:id', authenticate, async (req, res) => {
   }
 });
 
+app.delete('/api/employees/:id', authenticate, async (req, res) => {
+  try {
+    // Soft delete: set status to TERMINATED
+    const employee = await prisma.employee.update({
+      where: { id: req.params.id },
+      data: { status: 'TERMINATED' },
+    });
+    // Deactivate the user account too
+    if (employee.userId) {
+      await prisma.user.update({
+        where: { id: employee.userId },
+        data: { active: false },
+      });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════ POLICIES ═══════════════════
+// السياسات — يكتبها الأدمن ويقرأها الموظفون
+app.get('/api/policies', authenticate, async (req, res) => {
+  try {
+    const policies = await prisma.policy.findMany({
+      where: { active: true },
+      orderBy: { publishedAt: 'desc' },
+    });
+    res.json({ data: policies });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/policies', authenticate, async (req, res) => {
+  try {
+    // Only non-employee users can create policies
+    if (req.user.role === 'EMPLOYEE') return res.status(403).json({ error: 'غير مصرح' });
+    const { title, body, level, icon } = req.body;
+    if (!title || !body) return res.status(400).json({ error: 'العنوان والمحتوى مطلوبان' });
+    const policy = await prisma.policy.create({
+      data: {
+        title,
+        body,
+        level: level || 'default',
+        icon: icon || null,
+        createdBy: req.user.email || req.user.userId,
+      },
+    });
+    res.status(201).json(policy);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/policies/:id', authenticate, async (req, res) => {
+  try {
+    if (req.user.role === 'EMPLOYEE') return res.status(403).json({ error: 'غير مصرح' });
+    const policy = await prisma.policy.update({
+      where: { id: req.params.id },
+      data: req.body,
+    });
+    res.json(policy);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/policies/:id', authenticate, async (req, res) => {
+  try {
+    if (req.user.role === 'EMPLOYEE') return res.status(403).json({ error: 'غير مصرح' });
+    await prisma.policy.update({
+      where: { id: req.params.id },
+      data: { active: false },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ═══════════════════ ATTENDANCE ═══════════════════
 app.post('/api/attendance/clock', authenticate, upload.single('photo'), async (req, res) => {
   try {
@@ -321,6 +472,35 @@ app.post('/api/attendance/clock', authenticate, upload.single('photo'), async (r
       include: { branch: true },
     });
     if (!employee) return res.status(404).json({ error: 'الموظف غير موجود' });
+
+    // ═══ منع التكرار: بصمة واحدة دخول + واحدة خروج في اليوم ═══
+    const now = new Date();
+    const startOfDay = new Date(now); startOfDay.setHours(0,0,0,0);
+    const endOfDay = new Date(now); endOfDay.setHours(23,59,59,999);
+
+    const todayLogs = await prisma.attendance.findMany({
+      where: {
+        employeeId,
+        timestamp: { gte: startOfDay, lte: endOfDay },
+      },
+      orderBy: { timestamp: 'asc' },
+    });
+
+    const hasCheckIn = todayLogs.some(l => l.type === 'CHECK_IN');
+    const hasCheckOut = todayLogs.some(l => l.type === 'CHECK_OUT');
+
+    if (type === 'CHECK_IN') {
+      if (hasCheckIn) {
+        return res.status(400).json({ error: 'سجّلت دخولك اليوم بالفعل ✓' });
+      }
+    } else if (type === 'CHECK_OUT') {
+      if (!hasCheckIn) {
+        return res.status(400).json({ error: 'يجب تسجيل الدخول أولاً' });
+      }
+      if (hasCheckOut) {
+        return res.status(400).json({ error: 'سجّلت خروجك اليوم بالفعل ✓' });
+      }
+    }
 
     // Check geofence
     const distance = distanceMeters(
@@ -350,7 +530,7 @@ app.post('/api/attendance/clock', authenticate, upload.single('photo'), async (r
 
     res.status(201).json({
       attendance,
-      message: isValid ? 'تم تسجيل البصمة' : `خارج النطاق (${Math.round(distance)}م)`,
+      message: isValid ? (type === 'CHECK_IN' ? 'تم تسجيل الدخول ✓' : 'تم تسجيل الخروج ✓') : `خارج النطاق (${Math.round(distance)}م)`,
     });
   } catch (err) {
     console.error(err);
